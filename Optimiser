@@ -1,0 +1,1214 @@
+Imports System.Data
+Imports System.Data.Odbc
+Imports CutGLib
+Imports System.IO
+Partial Class Masters_Z011XX
+    Inherits System.Web.UI.Page
+    Public conobj As New connection
+    Dim conn As Odbc.OdbcConnection
+    Dim trans As OdbcTransaction
+    Public cnvtobj As New convert
+    Public valobj As New validations
+    Public masobj As New Master
+    Public fillobj As New fillCombos
+    Dim fill As New FillTable
+    Dim vlink(4), vmessage As String
+    Dim terms(6) As String
+    Dim vres(4) As String
+    Dim SalesObj As New Sales
+    Dim fileObj As New Files
+
+    Dim i As Integer
+    'fmdGridview Variables
+    Dim vRowCnter As Integer = 0, vcellcount As Integer = 0
+    Dim ArrayValues As New List(Of String)
+    Dim vcnti As Integer = 0
+    Dim vcnt As Integer = 0
+    Dim vTemCompanyID As String
+    Dim vTotalNoofBoards As Double = 0
+    Dim vTotalAmount As Double = 0
+
+    Dim vLocalUploadType As String = ""
+    Dim vLocalUID As String = "2"
+    Dim vLocalQuotationID As String = ""
+    Dim vLocalCompanyID As String = ""
+    Dim vLocalconString As String = "BankConnectionStringStaging"
+    Dim vGlobalMessage As String = ""
+    Private Delegate Sub DoStuff()
+
+    Protected Sub Page_Load(ByVal sender As Object, ByVal e As System.EventArgs) Handles Me.Load
+        If False Then
+            'Response.Redirect("../users/")
+        Else
+            If Not IsPostBack Then
+                'Session("Connstring") = vLocalconString
+                If Request.QueryString("userid") <> "" And Request.QueryString("projectid") <> "" Then
+                    SomeVeryLongAction()
+                End If
+            End If
+        End If
+    End Sub
+
+    Private Sub SomeVeryLongAction()
+        Dim Localconn As Odbc.OdbcConnection
+        Dim Localtrans As OdbcTransaction
+        Dim LocalSalesObj As New Sales
+        Dim vMessage As String = ""
+        Dim vQuotationNo As String = ""
+        Try
+            Dim vUserID As String = Request.QueryString("userid")
+            Dim vProjectID As String = Request.QueryString("projectid")
+
+            Localconn = conobj.makeConnection(vLocalconString, "")
+            Localtrans = Localconn.BeginTransaction(IsolationLevel.ReadCommitted)
+
+            'System.Threading.Thread.Sleep(20000)
+
+            deleteNestingData(vProjectID, Localconn, Localtrans)
+
+            runNestingAlgorithm(vUserID, vProjectID, vLocalUID, Localconn, Localtrans)
+
+            ' LocalSalesObj.executeQry("UPDATE tquotation SET bNestingRunning=0 WHERE nQuotationID=" & vLocalQuotationID, Localconn, Localtrans)
+
+            Localtrans.Commit()
+            vMessage = "Nesting executed successfully for " & vQuotationNo
+        Catch exc As Exception
+            Localtrans.Rollback()
+            vres(1) = "FAIL"
+            vres(0) = exc.Message.ToString
+        Finally
+            If vres(0) <> "" Then
+                Response.Write(vres(0) & ": " & vGlobalMessage)
+                Response.End()
+            End If
+
+            ' LocalSalesObj.executeQry("UPDATE tquotation SET bNestingRunning=0 WHERE nQuotationID=" & vLocalQuotationID, Localconn)
+        End Try
+    End Sub
+    Public Function deleteNestingData(ByVal vProjectID As String, ByVal conn As OdbcConnection, ByVal trans As OdbcTransaction) As Boolean
+        Dim LocalSalesObj1 As New Sales
+
+        'moptstocksheets
+        'tquotationmaterial
+
+        'tquotationmateriallayout
+        'moptstocksheetslayout
+
+        'tquotationstockpartdetails
+        'moptstockpartdetails
+
+        'tquotationcutpartdetails
+        'moptcutpartdetails
+
+       'Dim vUpdateNestingNoUpdateSql As String = "DELETE FROM moptstocksheetslayout WHERE " & vQuotationID
+        'LocalSalesObj1.executeQry(vUpdateNestingNoUpdateSql, conn, trans)
+
+        LocalSalesObj1.deleteRecord(vProjectID, "moptstocksheetslayout", "nProjectID", conn, trans)
+
+        'Reseting Nesting Number to 0
+
+        'Dim vUpdateNestingNoUpdateSql As String = "UPDATE  tquotationitems Set nNestingPartNumber=0 WHERE 1 And tquotationitems.`nQuotationID`=" & vQuotationID
+        'LocalSalesObj1.executeQry(vUpdateNestingNoUpdateSql, conn, trans)
+
+        Return True
+    End Function
+
+    'Find All Items With Item Category having Nesting Enabled
+    '($L3_$CoreMaterial_$Articlecode
+    'Take Distinct Core Material, Board Length And Board Width and Thickness
+    'Put it into array
+    'For Loop Stock Part
+    'Make Array For Input Part For that stock part
+    'Calculate
+    'Output Layout
+    'Output Stock Part
+    'Output Cut Parts
+    'Output Wastage Part
+    'Next Stock Part
+
+    Public Function runNestingAlgorithm(ByVal vUserID As String, ByVal vProjectID As String, ByVal vUID As String, ByVal conn As OdbcConnection, ByVal trans As OdbcTransaction) As Boolean
+        Dim LocalSalesObj2 As New Sales
+        Dim StockNo As Integer
+        Dim StockIndex, StockCount, iPart, iLayout, partCount, partIndex, tmp, iStock As Integer
+        Dim partLength, X, StockLength, StockHeight, StockWidth As Double
+        Dim StockActive As Boolean
+        Dim StockPartID As String = ""
+        Dim OurputPartID As String = ""
+
+        Dim remainpartCount As Integer
+        Dim iRemainPart As Integer
+        Dim remainingpartIndex As Integer
+
+        Dim W As Double = 0
+        Dim H As Double = 0
+        Dim Y As Double = 0
+        Dim Rotated As Boolean
+
+        Dim vSettingArr = LocalSalesObj2.getRecord(vUserID, "moptsetting", "nUserID", conn, trans)
+
+        Dim vUpdatevNestingSql = "UPDATE  moptpanel Set moptpanel.bIsEnabled=0,nNestingPartNumber=0 where 1 And moptpanel.`nProjectID`=" & vProjectID &  " And moptpanel.`nUserID`=" & vUserID 
+        LocalSalesObj2.executeQry(vUpdatevNestingSql, conn, trans)
+
+        Dim vRotatatable As Boolean = True
+
+        Dim vMaterialArr(30) As String
+        Dim vMaterialLayoutArr(10) As String
+        Dim vMaterialLayoutStockPartArr(10) As String
+        Dim vMaterialLayoutCutPartArr(10) As String
+
+        Dim vLeftTrimPlusRightTrim As Double = CDbl(vSettingArr(2)) + CDbl(vSettingArr(3))
+        Dim vTopTrimPlusBottomTrim As Double = CDbl(vSettingArr(4)) + CDbl(vSettingArr(5))
+
+        '2
+        Dim vNestingOverSizedColumn As String = "IF(moptpanel.nRotation=1" &
+",IF((moptpanel.`nLength`<= moptstocksheets.`nLength`-" & vLeftTrimPlusRightTrim & ") And (`moptpanel`.`nWidth`<= moptstocksheets.`nWidth`-" & vTopTrimPlusBottomTrim & "),'False','True') " &
+",IF(moptpanel.nRotation=2,IF((`moptpanel`.`nWidth`<= moptstocksheets.`nLength`-" & vLeftTrimPlusRightTrim & ") And (moptpanel.`nLength`<= moptstocksheets.`nWidth`-" & vTopTrimPlusBottomTrim & "),'False','True')" &
+",IF(GREATEST(moptpanel.`nLength`,`moptpanel`.`nWidth`)<=(GREATEST(moptstocksheets.`nLength`,moptstocksheets.`nWidth`)-" & vLeftTrimPlusRightTrim & ") AND LEAST(moptpanel.`nLength`,`moptpanel`.`nWidth`)<=(LEAST(moptstocksheets.`nLength`,moptstocksheets.`nWidth`)-" & vLeftTrimPlusRightTrim & "),'False','True') )) " &
+" "
+        Dim vBaseSql As String = "," & vNestingOverSizedColumn & " As NestingOversized FROM `moptpanel` INNER JOIN moptstocksheets ON (moptpanel.`nProjectID`=" & vProjectID & ") And (moptpanel.`nUserID`=" & vUserID & ") AND (moptstocksheets.`nProjectID`=" & vProjectID & ") And (moptstocksheets.`nUserID`=" & vUserID & ") AND (moptpanel.`sMaterialName`=moptstocksheets.`sMaterialName`) " &
+"  AND (" & vNestingOverSizedColumn & "='False')" 'HAVING 1 AND NestingOversized='False'"
+
+
+        Dim vsql As String = "SELECT moptstocksheets.nOptStockSheetID,moptstocksheets.sMaterialName as `sCoreMaterial`,moptstocksheets.nLength as `nBoardLength`,moptstocksheets.nWidth as `nBoardWidth`,0 as `nDimension3`,'' as sArticleCode,'' as sBarcode1 ,'' as sBarcode2" &
+         vBaseSql & " GROUP BY moptstocksheets.nOptStockSheetID "
+
+
+        Dim vNestingCounter As Integer = 0
+
+
+        Dim da As OdbcDataAdapter = New OdbcDataAdapter(vsql, conn)
+        da.SelectCommand.Transaction = trans
+        Dim dsMaterial As DataSet = New DataSet()
+        da.Fill(dsMaterial, "tblMaterial")
+
+        'Take Distinct Core Material, Board Length And Board Width and Thickness
+        Dim dv1 As DataView = New DataView(dsMaterial.Tables(0), "", "", DataViewRowState.CurrentRows)
+        If dv1.Count > 0 Then
+            '2
+            vsql = "SELECT moptpanel.nOptPanelID,moptstocksheets.sMaterialName as `sCoreMaterial`,moptstocksheets.nLength as `nBoardLength`,moptstocksheets.nWidth as `nBoardWidth`,0 as `nDimension3`,moptpanel.nWidth as `nDimension1`,moptpanel.nLength as `nDimension2`,'' as `sArticleCode`,moptpanel.nQty,moptpanel.nLength as `nCutLenght`,moptpanel.nWidth as `nCutWidth`,moptpanel.nRotation as `sUnitNumber`,`moptpanel`.`sName`,'' as sBarcode1,'' as sBarcode2 " & vBaseSql
+            '($L3_$CoreMaterial_$Articlecode
+            Dim da1 As OdbcDataAdapter = New OdbcDataAdapter(vsql, conn)
+            da1.SelectCommand.Transaction = trans
+            Dim dsMaterialParts As DataSet = New DataSet()
+            da1.Fill(dsMaterialParts, "tblMaterialParts")
+
+            'Loop Through Dataset and if Qty.>1 Then Add new rows
+            'Dim dsMaterialPartsCopy As New DataSet
+            Dim dvCopy As DataView = New DataView(dsMaterialParts.Tables(0), "", "", DataViewRowState.CurrentRows)
+            If dvCopy.Count > 0 Then
+                For Each drvCopy As DataRowView In dvCopy
+                    Dim vQtyDS As Integer = CInt(drvCopy("nQty").ToString)
+                    If vQtyDS > 1 Then
+                        Dim t As Integer = 0
+                        For t = 0 To vQtyDS - 2
+                            Dim drRow As DataRow = dsMaterialParts.Tables(0).NewRow()
+                            drRow("nOptPanelID") = drvCopy("nOptPanelID").ToString
+                            drRow("sCoreMaterial") = drvCopy("sCoreMaterial").ToString
+                            drRow("nBoardLength") = drvCopy("nBoardLength").ToString
+                            drRow("nBoardWidth") = drvCopy("nBoardWidth").ToString
+                            drRow("nDimension3") = drvCopy("nDimension3").ToString
+                            drRow("nDimension1") = drvCopy("nDimension1").ToString
+                            drRow("nDimension2") = drvCopy("nDimension2").ToString
+                            drRow("sArticleCode") = drvCopy("sArticleCode").ToString
+                            drRow("nQty") = drvCopy("nQty").ToString
+                            drRow("nCutLenght") = drvCopy("nCutLenght").ToString
+                            drRow("nCutWidth") = drvCopy("nCutWidth").ToString
+                            drRow("sUnitNumber") = drvCopy("sUnitNumber").ToString
+                            drRow("sName") = drvCopy("sName").ToString
+                            drRow("sBarcode1") = drvCopy("sBarcode1").ToString
+                            drRow("sBarcode2") = drvCopy("sBarcode2").ToString
+                            drRow("NestingOversized") = drvCopy("NestingOversized").ToString
+                            dsMaterialParts.Tables(0).Rows.Add(drRow)
+                        Next
+                    End If
+
+                Next
+            End If
+
+            For Each drv1 As DataRowView In dv1
+                Dim vMaterialDiscount As Double = 0
+                Dim vMaterialMarkup As Double = 0
+                'Add record in tquotationmaterial
+                'tquotationitems.sArticleCode,tquotationitems.nCost,tquotationitems.nHSNID,tquotationitems.nTaxRate,mitemcategory.nUOMID
+
+                vMaterialArr(2) = drv1("nBoardLength").ToString
+                vMaterialArr(3) = drv1("nBoardWidth").ToString
+                vMaterialArr(0) = vProjectID
+                vMaterialArr(1) = drv1("sCoreMaterial").ToString
+                vMaterialArr(4) = drv1("nDimension3").ToString
+                vMaterialArr(5) = "0" 'nNoofBoards
+                vMaterialArr(6) = "0" 'nBoardCost
+                vMaterialArr(7) = "0" 'nBoardMarkupCost
+                vMaterialArr(8) = "0" 'nBoardTotalCost
+                vMaterialArr(9) = "0" 'nBoardTotalCostAmt
+                vMaterialArr(10) = drv1("sArticleCode").ToString 'sArticleCode
+                vMaterialArr(11) = "0" 'nHSNID
+                vMaterialArr(12) = "0" 'nTaxRate
+                vMaterialArr(13) = "0" 'nDiscountAmt
+                vMaterialArr(14) = "0" 'nTotalAfterDiscountAmt
+                vMaterialArr(15) = "0" 'nTaxAmt
+                vMaterialArr(16) = "0" 'nTotalAfterTaxAmt
+                vMaterialArr(17) = "0"
+                vMaterialArr(19) = drv1("sBarcode1").ToString 'Face Coat 1
+                vMaterialArr(20) = drv1("sBarcode2").ToString 'Face Coat 2
+                vMaterialArr(18) = vMaterialDiscount
+
+                ' Dim vres1 = LocalSalesObj2.addRecord(vMaterialArr, "tquotationmaterial", vUID, conn, trans)
+                vMaterialArr(21) = drv1("nOptStockSheetID").ToString
+
+                Dim Calculator As CutGLib.CutEngine
+                Calculator = New CutGLib.CutEngine
+
+                Dim layout As ExampleCutGLib.PartLayout
+                Dim fLayout2d As New ExampleCutGLib.LayoutList
+
+                setupNestingConfigVariables(vSettingArr, Calculator, "")
+
+                Calculator.AddStock(CDbl(vMaterialArr(2)), CDbl(vMaterialArr(3)), 10000, vMaterialArr(1) & "_" & CDbl(vMaterialArr(3)) & "x" & CDbl(vMaterialArr(2)))
+
+                Dim vMatrialBoardCount As Integer = 0
+
+                Dim dv2 As DataView = New DataView(dsMaterialParts.Tables(0), "sCoreMaterial='" & vMaterialArr(1) & "' AND sArticleCode='" & vMaterialArr(10) & "' AND nBoardLength=" & vMaterialArr(2) & " AND nBoardWidth=" & vMaterialArr(3) & " AND nDimension3=" & vMaterialArr(4) & " AND ((sBarcode1='" & vMaterialArr(19) & "' AND sBarcode2='" & vMaterialArr(20) & "') OR (sBarcode1='" & vMaterialArr(20) & "' AND sBarcode2='" & vMaterialArr(19) & "') )", "", DataViewRowState.CurrentRows)
+                If dv2.Count > 0 Then
+                    Dim vCutParts(dv2.Count) As String
+                    Dim vCutPartsName(dv2.Count) As String
+                    Dim vCutPartsCounter(dv2.Count) As String
+
+                    Dim vCutPartCnt As Integer = 0
+                    For Each drv2 As DataRowView In dv2
+                        vNestingCounter += 1
+                        vCutParts(vCutPartCnt) = drv2("nOptPanelID").ToString
+                        vCutPartsName(vCutPartCnt) = drv2("sName").ToString
+                        vCutPartsCounter(vCutPartCnt) = vNestingCounter
+                        '($L3_$CoreMaterial_$Articlecode
+                        Dim vPartName As String = vNestingCounter.ToString & ":" & drv2("sName").ToString '& "_" & drv2("sArticleCode").ToString
+
+                        'drv2("nDimension3").ToString & "_" & drv2("sCoreMaterial").ToString & "_" & drv2("sArticleCode").ToString
+
+                        'vPartName = drv2("nQuotationItemsID").ToString & ":" & drv2("sName").ToString
+
+                        'Pytha Sheet Column Name
+                        'Take Rotatable from input file
+                        '25 Seqence No.
+                        vRotatatable = True
+                        'No Rotation
+                        Dim vCutLength As String = drv2("nCutLenght").ToString
+                        Dim vCutWidth As String = drv2("nCutWidth").ToString
+                        If drv2("sUnitNumber") = "1" Or drv2("sUnitNumber") = "2" Then
+                            vRotatatable = False
+                        End If
+                        If drv2("sUnitNumber") = "2" Then
+                            vCutLength = drv2("nCutWidth").ToString
+                            vCutWidth = drv2("nCutLenght").ToString
+                        End If
+                        Calculator.AddPart(vCutLength, vCutWidth, 1, vRotatatable, vPartName) 'drv2("nQty").ToString
+                        vCutPartCnt += 1
+
+
+                        vUpdatevNestingSql = "UPDATE  moptpanel Set nNestingPartNumber=" & vNestingCounter & ",moptpanel.bIsEnabled=1 where 1 AND nNestingPartNumber=0 And moptpanel.`nOptPanelID`=" & drv2("nOptPanelID").ToString
+                        LocalSalesObj2.executeQry(vUpdatevNestingSql, conn, trans)
+
+                    Next
+                    Dim result As String
+                    result = Calculator.Execute()
+                    If (result = "") Then
+                        'OuputLayoutInfo(Calculator)
+                        'Output Layout
+                        'Output Stock Part
+                        'Output Cut Parts
+                        'Output Wastage Part
+
+                        For iLayout = 0 To Calculator.LayoutCount - 1
+
+                            Calculator.GetLayoutInfo(iLayout, StockNo, StockCount)
+                            vMatrialBoardCount += StockCount
+                            vMaterialLayoutArr(0) = vProjectID
+                            vMaterialLayoutArr(1) = vMaterialArr(21)
+                            vMaterialLayoutArr(2) = iLayout.ToString 'LayoutSeqNo
+                            vMaterialLayoutArr(3) = StockNo 'StartStockCount
+                            vMaterialLayoutArr(4) = StockCount 'StockCount
+                            vMaterialLayoutArr(5) = Math.Round((Calculator.GetLayoutFillRatio(iLayout) * 100), 2, System.MidpointRounding.AwayFromZero)  'UtilisationPercentage
+                            Dim vres2 = LocalSalesObj2.addRecord(vMaterialLayoutArr, "moptstocksheetslayout", vUID, conn, trans)
+                            vMaterialLayoutArr(6) = vres2(2)
+
+                            'Upload Files
+                            'tquotation_material_ptx
+                            'tquotation_material_autocad
+                            'ID as desc
+                            Dim vLocalImageWidth As Integer = 0
+                            Dim vLocalImageHeight As Integer = 0
+
+                            StockIndex = StockNo
+                            'Now we use another approach To output results. The calculation created several different cutting layouts, so let's
+                            'iterate by layouts And output the stock length used for each layout And parts cut. 
+                            For iStock = StockIndex To StockIndex + StockCount - 1
+
+                                Calculator.GetStockInfo(iStock, StockWidth, StockHeight, StockActive)
+
+                                Calculator.GetLinearStockInfo(iStock, StockLength, StockActive, StockPartID)
+                                partCount = Calculator.GetPartCountOnStock(iStock)
+                                remainpartCount = Calculator.GetRemainingPartCountOnStock(iStock)
+
+                                layout = fLayout2d.AddRectLayout(StockCount, StockWidth, StockHeight)
+
+
+                                vMaterialLayoutStockPartArr(0) = vMaterialLayoutArr(6)
+                                vMaterialLayoutStockPartArr(1) = iStock.ToString 'StockSeqNo
+                                vMaterialLayoutStockPartArr(2) = partCount 'TotalPartCount
+                                vMaterialLayoutStockPartArr(3) = remainpartCount 'RemainingPartCount
+                                Dim vres3 = LocalSalesObj2.addRecord(vMaterialLayoutStockPartArr, "moptstockpartdetails", vUID, conn, trans)
+                                vMaterialLayoutStockPartArr(5) = vres3(2)
+
+                                'Define the Dataset to store
+                                Dim dsCut As New DataSet
+                                Dim DtCut As New System.Data.DataTable()
+                                DtCut.TableName = "tblOutPut"
+                                DtCut.Columns.Add(New DataColumn("nOptCutDetailsID", System.Type.[GetType]("System.String")))
+                                DtCut.Columns.Add(New DataColumn("nOptStockPartDetailsID", System.Type.[GetType]("System.String")))
+                                DtCut.Columns.Add(New DataColumn("nCutSeqNo", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nX1", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nY1", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nX2", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nY2", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("bLevel", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("sCutAxis", System.Type.[GetType]("System.String")))
+                                DtCut.Columns.Add(New DataColumn("nCutValue", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nPx", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nPy", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nRx", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nRy", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("bRStatus", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nSx", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("nSy", System.Type.[GetType]("System.Double")))
+                                DtCut.Columns.Add(New DataColumn("bSStatus", System.Type.[GetType]("System.Double")))
+                                dsCut.Tables.Add(DtCut)
+
+
+                                'You can get Cut Count for the stock
+                                Dim CutsCount As Integer = Calculator.GetStockCutCount(iStock)
+                                Dim iCut As Integer = 0
+                                Dim X1, Y1, X2, Y2, aLevel As Double
+                                Dim vArrcutdetails(20) As String
+                                vArrcutdetails(0) = vMaterialLayoutStockPartArr(5)
+                                For iCut = 0 To CutsCount - 1
+                                    Calculator.GetStockCut(StockNo, iCut, X1, Y1, X2, Y2, aLevel)
+                                    vArrcutdetails(1) = iCut
+                                    vArrcutdetails(2) = X1
+                                    vArrcutdetails(3) = Y1
+                                    vArrcutdetails(4) = X2
+                                    vArrcutdetails(5) = Y2
+                                    vArrcutdetails(6) = aLevel
+                                    vArrcutdetails(7) = "" 'sCutAxis
+                                    vArrcutdetails(8) = "0" 'nCutValue
+                                    vArrcutdetails(9) = "0" 'nPx
+                                    vArrcutdetails(10) = "0" 'nPy
+                                    vArrcutdetails(11) = "0" 'nRx
+                                    vArrcutdetails(12) = "0" 'nRy
+                                    vArrcutdetails(13) = "0" 'bRStatus
+                                    vArrcutdetails(14) = "0" 'nSx
+                                    vArrcutdetails(15) = "0" 'nSy
+                                    vArrcutdetails(16) = "0" 'bSStatus
+
+                                    Dim vres31 = LocalSalesObj2.addRecord(vArrcutdetails, "moptcutdetails", vUID, conn, trans)
+                                    vArrcutdetails(17) = vres31(2)
+
+                                    'Insert row in Dataset
+                                    Dim newdsCutRow As DataRow = dsCut.Tables(0).NewRow()
+                                    newdsCutRow(0) = vArrcutdetails(17)
+                                    newdsCutRow(1) = vArrcutdetails(0)
+                                    newdsCutRow(2) = vArrcutdetails(1)
+                                    newdsCutRow(3) = vArrcutdetails(2)
+                                    newdsCutRow(4) = vArrcutdetails(3)
+                                    newdsCutRow(5) = vArrcutdetails(4)
+                                    newdsCutRow(6) = vArrcutdetails(5)
+                                    dsCut.Tables(0).Rows.Add(newdsCutRow)
+
+                                    'Store this data in separate table
+                                    'Console.WriteLine("Cut={0}:  X1={1}  Y1={2}  X2={3}  Y2={4}", iCut, X1, Y1, X2, Y2)
+                                Next iCut
+
+
+                                'Define the Dataset to store
+                                Dim dsCutParts As New DataSet
+                                Dim DtCutParts As New System.Data.DataTable()
+                                DtCutParts.TableName = "tblOutPut"
+                                DtCutParts.Columns.Add(New DataColumn("nOptCutpartDetailsID", System.Type.[GetType]("System.String")))
+                                DtCutParts.Columns.Add(New DataColumn("nOptStockPartDetailsID", System.Type.[GetType]("System.String")))
+                                DtCutParts.Columns.Add(New DataColumn("nOptPanelID", System.Type.[GetType]("System.Double")))
+                                DtCutParts.Columns.Add(New DataColumn("nLength", System.Type.[GetType]("System.Double")))
+                                DtCutParts.Columns.Add(New DataColumn("nHeight", System.Type.[GetType]("System.Double")))
+                                DtCutParts.Columns.Add(New DataColumn("nXaxis", System.Type.[GetType]("System.Double")))
+                                DtCutParts.Columns.Add(New DataColumn("nYaxis", System.Type.[GetType]("System.Double")))
+                                DtCutParts.Columns.Add(New DataColumn("bRotated", System.Type.[GetType]("System.Double")))
+                                DtCutParts.Columns.Add(New DataColumn("bMatch", System.Type.[GetType]("System.String")))
+                                dsCutParts.Tables.Add(DtCutParts)
+
+                                For iPart = 0 To partCount - 1
+                                    partIndex = Calculator.GetPartIndexOnStock(iStock, iPart)
+                                    Calculator.GetResultPart(partIndex, tmp, W, H, X, Y, Rotated, OurputPartID)
+                                    vMaterialLayoutCutPartArr(0) = vMaterialLayoutStockPartArr(5)
+                                    vMaterialLayoutCutPartArr(1) = vCutParts(partIndex) 'nQuotationDetID
+                                    vMaterialLayoutCutPartArr(2) = W 'nLength
+                                    vMaterialLayoutCutPartArr(3) = H 'nHeight
+                                    vMaterialLayoutCutPartArr(4) = X 'Xaxis
+                                    vMaterialLayoutCutPartArr(5) = Y 'Yaxis
+                                    vMaterialLayoutCutPartArr(6) = "0" 'Rotated
+                                    If Rotated Then
+                                        vMaterialLayoutCutPartArr(6) = "1" 'Rotated
+                                    End If
+                                    Dim vres4 = LocalSalesObj2.addRecord(vMaterialLayoutCutPartArr, "moptcutpartdetails", vUID, conn, trans)
+                                    vMaterialLayoutCutPartArr(8) = vres4(2)
+
+                                    layout.AddRectPart(X, Y, W, H, Rotated, vCutPartsName(partIndex), vCutPartsCounter(partIndex))
+
+                                    Dim newdsCutPartsRow As DataRow = dsCutParts.Tables(0).NewRow()
+                                    newdsCutPartsRow(0) = vMaterialLayoutCutPartArr(8)
+                                    newdsCutPartsRow(1) = vMaterialLayoutCutPartArr(0)
+                                    newdsCutPartsRow(2) = vMaterialLayoutCutPartArr(1)
+                                    newdsCutPartsRow(3) = vMaterialLayoutCutPartArr(2)
+                                    newdsCutPartsRow(4) = vMaterialLayoutCutPartArr(3)
+                                    newdsCutPartsRow(5) = vMaterialLayoutCutPartArr(4)
+                                    newdsCutPartsRow(6) = vMaterialLayoutCutPartArr(5)
+                                    newdsCutPartsRow(7) = vMaterialLayoutCutPartArr(6)
+                                    newdsCutPartsRow(8) = "0"
+                                    dsCutParts.Tables(0).Rows.Add(newdsCutPartsRow)
+
+                                Next
+
+                                'Remaining Parts
+
+                                For iRemainPart = 0 To remainpartCount - 1
+                                    remainingpartIndex = Calculator.GetRemainingPartIndexOnStock(iStock, iRemainPart)
+                                    Calculator.GetRemainingPart(remainingpartIndex, tmp, W, H, X, Y)
+
+                                    vMaterialLayoutCutPartArr(0) = vMaterialLayoutStockPartArr(5)
+                                    vMaterialLayoutCutPartArr(1) = "0" 'nQuotationDetID
+                                    vMaterialLayoutCutPartArr(2) = W 'nLength
+                                    vMaterialLayoutCutPartArr(3) = H 'nHeight
+                                    vMaterialLayoutCutPartArr(4) = X 'Xaxis
+                                    vMaterialLayoutCutPartArr(5) = Y 'Yaxis
+                                    vMaterialLayoutCutPartArr(6) = "0" 'Rotated
+                                    Dim vres5 = LocalSalesObj2.addRecord(vMaterialLayoutCutPartArr, "moptcutpartdetails", vUID, conn, trans)
+                                    vMaterialLayoutCutPartArr(8) = vres5(2)
+                                    Dim vWastagePartIndexShow As Integer = iRemainPart + 1 'remainingpartIndex + 1
+                                    layout.AddRectWastePart(X, Y, W, H, "", "OC" & vWastagePartIndexShow.ToString)
+
+                                    Dim newdsCutPartsRow As DataRow = dsCutParts.Tables(0).NewRow()
+                                    newdsCutPartsRow(0) = vMaterialLayoutCutPartArr(8)
+                                    newdsCutPartsRow(1) = vMaterialLayoutCutPartArr(0)
+                                    newdsCutPartsRow(2) = vMaterialLayoutCutPartArr(1)
+                                    newdsCutPartsRow(3) = vMaterialLayoutCutPartArr(2)
+                                    newdsCutPartsRow(4) = vMaterialLayoutCutPartArr(3)
+                                    newdsCutPartsRow(5) = vMaterialLayoutCutPartArr(4)
+                                    newdsCutPartsRow(6) = vMaterialLayoutCutPartArr(5)
+                                    newdsCutPartsRow(7) = vMaterialLayoutCutPartArr(6)
+                                    newdsCutPartsRow(8) = "0"
+                                    dsCutParts.Tables(0).Rows.Add(newdsCutPartsRow)
+
+                                Next
+
+
+' Step 1.	Initializes board dimensions, processes cutting details, 
+'determines cut axes/values, identifies parts to take, and updates the database.
+
+                                'vMaterialArr(2)  'nBoardLength
+                                'vMaterialArr(3)  'nBoardWidth
+
+                                'Update the  moptcutdetails for Stock Part Details
+                                'Put the Data from moptcutdetails in dataset
+                                'Put the Data from moptcutpartdetails in dataset
+                                'Loop moptcutdetails Dataset
+                                'If cnt is 0 then Sheet Dimension is Parts to Take
+                                'Extra Fields 
+                                'CutAxis, Common, Cut Value, DifferenceX,DifferenceY,PartToTakeX,ParttoTakeY,SurPlusX,SurplusY,StatusPartToTake,StatusSurplus
+                                'Cut Axis: If X1=X2 Then Y Else X
+                                'Common: If X1=X2 Then X1 Else Y1
+                                'Difference Dx: If Cut Axis="X" Then X2-X1 Else blank
+                                'Difference Dy: If Cut Axis="Y" Then Y2-Y1 Else  X2-X1
+                                'if cnt is 0 then Px=Board Width, Py=Board Length
+                                'Cut Value = Common
+                                'Else
+                                'Identify the Parts to Take
+                                '    Match Difference Dx to Sx Order BY nSeq No. if yes then 
+                                '    Parts to Take Px=Sx  Py=Sy
+                                '    OR take Px=Rx  Py=Ry
+                                '    Take Original X1, Y1
+                                '    If Cut Axis = X then Cut Value= Common - Y1
+                                '    Else Cut Value= Common - X1
+
+                                'Rx= If Cut Axis="Y" then Cut Value + Y1 else Px  Changed formula as below
+                                'Rx= If Cut Axis="Y" then Cut Value else X2-X1
+                                'Ry= If Cut Axis="X" then Cut Value else Py
+                                'Sx= If Cut Axis="Y" then Px - Cut Value else Rx
+                                'Sy= If Cut Axis="X" then Py - Cut Value else Py
+
+                                'Find Out the Rx Ry Matching Part in Cut Parts Dataset
+                                'bRStatus: 1 = Cut Parts, 2 = Wastage Parts
+
+                                'Find Out the Sx Sy Matching Part in Cut Parts Dataset
+                                'bSStatus 1 = Cut Parts, 2 = Wastage Parts
+
+                                'Update record in database.
+
+                                Dim vCutCnt As Integer = 0
+                                Dim vXAxisCnt As Integer = 0
+                                Dim vYAxisCnt As Integer = 0
+
+                                Dim vBoardLength = vMaterialArr(2)  'nBoardLength
+                                Dim vBoardWidth = vMaterialArr(3)  'nBoardWidth
+
+                                Dim dvo As DataView = New DataView(dsCut.Tables(0), "", " nCutSeqNo ASC ", DataViewRowState.CurrentRows)
+                                For Each dr As DataRowView In dvo
+                                    vGlobalMessage = "Cut Loop"
+                                    vCutCnt += 1
+                                    Dim vCutAxis As String = ""
+                                    Dim vCutValue As Double = 0
+                                    Dim vPx As Double = 0
+                                    Dim vPy As Double = 0
+                                    Dim vRx As Double = 0
+                                    Dim vRy As Double = 0
+                                    Dim vSx As Double = 0
+                                    Dim vSy As Double = 0
+                                    Dim vCommon As Double = 0
+                                    Dim vDx As Double = 0
+                                    Dim vDy As Double = 0
+                                    Dim vRStatus As Double = 0
+                                    Dim vSStatus As Double = 0
+'Step 1 Over
+
+'Step 2: Determines the cut axis and common value
+
+                                    'Cut Axis: If X1=X2 Then Y Else X
+                                    'Common: If X1=X2 Then X1 Else Y1
+                                    If dr("nX1").ToString = dr("nX2").ToString Then
+                                        vCutAxis = "Y"
+                                        vCommon = CDbl(dr("nX1").ToString)
+                                    Else
+                                        vCutAxis = "X"
+                                        vCommon = CDbl(dr("nY1").ToString)
+                                    End If
+'Step 2 Over
+
+'Step 3: Calculates differences (Dx or Dy)
+
+                                    If vCutAxis = "X" Then
+                                        vXAxisCnt += 1
+                                        'Difference Dx: If Cut Axis="X" Then X2-X1 Else blank
+                                        vDx = CDbl(dr("nX2").ToString) - CDbl(dr("nX1").ToString)
+                                        'Trim and X Axis
+                                        If CDbl(dr("nX1").ToString) = 0 And CDbl(dr("nX2").ToString) = CDbl(vBoardLength) Then
+                                            'Nothing to be done
+                                        ElseIf CDbl(dr("nX1").ToString) = 0 Or CDbl(dr("nX2").ToString) = CDbl(vBoardLength) Then
+                                            vDx = vDx - (Calculator.SawWidth / 2)
+                                        Else
+                                            vDx = vDx - (Calculator.SawWidth)
+                                        End If
+                                    Else
+                                        vYAxisCnt += 1
+                                        'Difference Dy: If Cut Axis="Y" Then Y2-Y1 Else  X2-X1
+                                        vDy = CDbl(dr("nY2").ToString) - CDbl(dr("nY1").ToString)
+                                        'Trim and Y Axis
+                                        If CDbl(dr("nY1").ToString) = 0 And CDbl(dr("nY2").ToString) = CDbl(vBoardWidth) Then
+                                            'Nothing to be done
+                                        ElseIf CDbl(dr("nY1").ToString) = 0 Or CDbl(dr("nY2").ToString) = CDbl(vBoardWidth) Then
+                                            vDy = vDy - (Calculator.SawWidth / 2)
+                                        Else
+                                            vDy = vDy - (Calculator.SawWidth)
+                                        End If
+                                    End If
+'Step 3 Over
+
+'Step 4: For first Cut, Finding Px and Py
+
+                                    If vCutCnt = 1 Then
+                                        'if cnt is 0 then Px=Board Width, Py=Board Length
+                                        'vBoardLength = vBoardLength - Calculator.TrimTop
+                                        'vBoardWidth = vBoardWidth - Calculator.TrimLeft
+                                        vPx = vBoardLength ' vMaterialArr(2) 'nBoardLength
+                                        vPy = vBoardWidth 'vMaterialArr(3)  'nBoardWidth
+                                        ' vPx = vPx - Calculator.TrimBottom
+                                        'vPy = vPy - Calculator.TrimLeft
+'Step 4 Over
+
+'Step 5: For first Cut, Finding Cut value
+
+                                        vCutValue = vCommon
+                                        If vCutAxis = "X" Then
+                                            vCutValue = vCutValue - (Calculator.SawWidth / 2) - Calculator.TrimTop 'Trim Left Means Bottom 
+                                        Else
+                                            vCutValue = vCutValue - (Calculator.SawWidth / 2) - Calculator.TrimLeft
+                                        End If
+'Step 5 Over
+
+'Step 6: Finding Part to take by matching from Result and surplus
+
+                                    Else
+                                        'Identify the Parts to Take
+                                        'Match Difference Dx to Sx Order BY nSeq No. if yes then 
+                                        'Parts to Take Px=Sx  Py=Sy
+                                        'OR take Px=Rx  Py=Ry
+                                        Dim vExtraCondSurPlus As String = ""
+                                        Dim vExtraCondResults As String = ""
+                                        If vDx > 0 Then
+                                            vExtraCondSurPlus = " AND (nSx=" & vDx & " AND bSStatus=0) "
+                                            vExtraCondResults = " AND (nRx=" & vDx & " AND bRStatus=0)"
+                                            'vExtraCond = " AND ((nRx=" & vDx & " AND bRStatus=0) OR (nSx=" & vDx & " AND bSStatus=0) )"
+                                        Else
+                                            vExtraCondSurPlus = "  AND (nSy=" & vDy & " AND bSStatus=0) "
+                                            vExtraCondResults = " AND (nRy=" & vDy & " AND bRStatus=0)"
+                                            'vExtraCond = " AND ((nRy=" & vDy & " AND bRStatus=0) OR (nSy=" & vDy & " AND bSStatus=0))"
+                                        End If
+                                        Dim vMatch As Boolean = False
+'Step 6 Over
+
+'Step 7: Finding Px or Py by running condition in SURPLUS
+
+                                        Dim dvo1 As DataView = New DataView(dsCut.Tables(0), "nCutSeqNo<" & dr("nCutSeqNo").ToString & vExtraCondSurPlus, " nCutSeqNo DESC ", DataViewRowState.CurrentRows)
+                                        If dvo1.Count > 0 Then
+                                            vGlobalMessage = "Surplus Loop"
+                                            For Each dr1 As DataRowView In dvo1
+
+                                                'Finding Px
+                                                'Current Seq Y2 should be = to Matched Y2
+                                                'And
+                                                'Current Seq X2 should be greater than matched X2
+                                                'Finding Py
+                                                'Current Seq X2 should be = to Matched X2
+                                                'And
+                                                'Current Seq Y2 should be greater than matched Y2
+'Step 7A: Axis is Matching
+                                                If vCutAxis = dr1("sCutAxis").ToString Then
+                                                    If vDx > 0 Then
+                                                        'Finding Py
+                                                        If CDbl(dr("nY2").ToString) > CDbl(dr1("nY2").ToString) Then
+                                                            If (CDbl(dr("nY1").ToString) - CDbl(dr1("nY1").ToString)) < CDbl(dr1("nSy").ToString) Then 'New Condition Added Before XML Update
+                                                                If CDbl(dr("nX2").ToString) = CDbl(dr1("nX2").ToString) Then
+                                                                    vMatch = True
+                                                                End If
+                                                            End If
+                                                        End If
+                                                        Else
+                                                        'Finding Px
+                                                        If CDbl(dr("nX2").ToString) > CDbl(dr1("nX2").ToString) Then
+                                                            If (CDbl(dr("nX1").ToString) - CDbl(dr1("nX1").ToString)) < CDbl(dr1("nSx").ToString) Then 'New Condition Added Before XML Update
+                                                                If CDbl(dr("nY2").ToString) = CDbl(dr1("nY2").ToString) Then
+                                                                    vMatch = True
+                                                                End If
+                                                            End If
+                                                        End If
+                                                    End If
+                                                Else
+'Step 7B: Axis is Not Matching                                                
+                                                    If vDx > 0 Then
+                                                        'Finding Py
+                                                        'Current Seq X1 should be = to Matched X1
+                                                        'And
+                                                        'Current Seq Y1 should be greater than matched Y1
+                                                        If CDbl(dr("nY1").ToString) > CDbl(dr1("nY1").ToString) Then
+                                                            If CDbl(dr("nX1").ToString) = CDbl(dr1("nX1").ToString) Then
+                                                                vMatch = True
+                                                            End If
+                                                        End If
+                                                    Else
+                                                        'Finding Px
+                                                        ' Current Seq Y1 should be = to Matched Y1
+                                                        'And
+                                                        'Current Seq X1 should be greater than matched X1
+                                                        If CDbl(dr("nX1").ToString) > CDbl(dr1("nX1").ToString) Then
+                                                            If CDbl(dr("nY1").ToString) = CDbl(dr1("nY1").ToString) Then
+                                                                vMatch = True
+                                                            End If
+                                                        End If
+                                                    End If
+
+                                                End If
+
+                                                If vMatch Then
+                                                    'This Row Status have to be updated
+                                                    Dim dsCutRowUpdate() As Data.DataRow
+                                                    dsCutRowUpdate = dsCut.Tables(0).Select("nCutSeqNo=" & dr1("nCutSeqNo").ToString)
+                                                    'bRStatus 14
+                                                    'bSStatus  17
+                                                    dsCutRowUpdate(0)(17) = 3 'bSStatus  17
+                                                    vPx = CDbl(dr1("nSx").ToString)
+                                                    vPy = CDbl(dr1("nSy").ToString)
+
+'Step 7 Over
+
+'Step 8: Finding Cut value for the first time X or Y occurs
+
+                                                    'Take Original X1, Y1
+                                                    If (vCutAxis = "X" And vXAxisCnt = 1) Or (vCutAxis = "Y" And vYAxisCnt = 1) Then
+                                                        vCutValue = vCommon
+                                                        If vCutAxis = "X" Then
+                                                            vCutValue = vCutValue - (Calculator.SawWidth / 2) - Calculator.TrimTop 'Trim Left Means Bottom 
+                                                        Else
+                                                            vCutValue = vCutValue - (Calculator.SawWidth / 2) - Calculator.TrimLeft
+                                                        End If
+'Step 8 Over
+
+'Step 9: Finding Cut Value for all axis whose appearance count is more than 1
+
+                                                    Else
+                                                        If vCutAxis = "X" Then
+                                                            If CDbl(dr1("nY1").ToString) > 0 Then
+                                                                'If Cut Axis = X then Cut Value= Common - Y1
+                                                                vCutValue = vCommon - CDbl(dr1("nY1").ToString) - (Calculator.SawWidth)
+                                                            Else
+                                                                vCutValue = vCommon - CDbl(dr1("nY1").ToString) - (Calculator.SawWidth / 2)
+                                                            End If
+                                                        Else
+                                                            If CDbl(dr1("nX1").ToString) > 0 Then
+                                                                vCutValue = vCommon - CDbl(dr1("nX1").ToString) - (Calculator.SawWidth)
+                                                            Else
+                                                                vCutValue = vCommon - CDbl(dr1("nX1").ToString) - (Calculator.SawWidth / 2)
+                                                            End If
+                                                        End If
+                                                    End If
+
+                                                    Exit For
+                                                End If
+
+                                            Next
+
+                                        End If
+'Step 9 Over                                        
+
+'Step 10: Finding Px or Py by running condition in RESULT
+
+                                        If vMatch = False Then
+                                            'Change 1 20240624
+                                            'Dim dvo11 As DataView = New DataView(dsCut.Tables(0), "nCutSeqNo<" & dr("nCutSeqNo").ToString & vExtraCondResults, " nCutSeqNo ASC ", DataViewRowState.CurrentRows)
+                                            Dim dvo11 As DataView = New DataView(dsCut.Tables(0), "nCutSeqNo<" & dr("nCutSeqNo").ToString & vExtraCondResults, " nCutSeqNo DESC ", DataViewRowState.CurrentRows)
+                                            vGlobalMessage = "Result Loop"
+                                            If dvo11.Count > 0 Then
+                                                For Each dr11 As DataRowView In dvo11
+                                                    If dvo11.Count > 1 Then
+                                                        If vDx > 0 Then
+                                                            'Finding Py
+                                                            If CDbl(dr("nY1").ToString) > CDbl(dr11("nY1").ToString) And CDbl(dr("nY1").ToString) < CDbl(dr11("nY2").ToString) Then
+                                                                If CDbl(dr("nX2").ToString) = CDbl(dr11("nX2").ToString) Then
+                                                                    vMatch = True
+                                                                End If
+                                                            End If
+                                                        Else
+                                                            'Finding Px
+                                                            If CDbl(dr("nX1").ToString) > CDbl(dr11("nX1").ToString) And CDbl(dr("nX1").ToString) < CDbl(dr11("nX2").ToString) Then
+                                                                If CDbl(dr("nY2").ToString) = CDbl(dr11("nY2").ToString) Then
+                                                                    vMatch = True
+                                                                End If
+                                                            End If
+                                                        End If
+                                                    Else
+                                                        vMatch = True
+                                                    End If
+                                                    If vMatch Then
+                                                        'This Row Status have to be updated
+                                                        Dim dsCutRowUpdate() As Data.DataRow
+                                                        dsCutRowUpdate = dsCut.Tables(0).Select("nCutSeqNo=" & dr11("nCutSeqNo").ToString)
+                                                        'bRStatus 14
+                                                        'bSStatus  17
+
+                                                        dsCutRowUpdate(0)(14) = 3 'bRStatus 14
+                                                        vPx = CDbl(dr11("nRx").ToString)
+                                                        vPy = CDbl(dr11("nRy").ToString)
+
+'Step 10 Over
+
+'Step 11: Finding Cut value for the first time X or Y occurs
+
+                                                        'Take Original X1, Y1
+                                                        If (vCutAxis = "X" And vXAxisCnt = 1) Or (vCutAxis = "Y" And vYAxisCnt = 1) Then
+                                                            vCutValue = vCommon
+                                                            If vCutAxis = "X" Then
+                                                                vCutValue = vCutValue - (Calculator.SawWidth / 2) - Calculator.TrimTop 'Trim Left Means Bottom 
+                                                            Else
+                                                                vCutValue = vCutValue - (Calculator.SawWidth / 2) - Calculator.TrimLeft
+                                                            End If
+                                                        Else
+'Step 11 Over                                                        
+
+'Step 12: Finding Cut Value for all axis whose appearance count is more than 1
+
+                                                            If vCutAxis = "X" Then
+                                                                If CDbl(dr11("nY1").ToString) > 0 Then
+                                                                    'If Cut Axis = X then Cut Value= Common - Y1
+                                                                    vCutValue = vCommon - CDbl(dr11("nY1").ToString) - (Calculator.SawWidth)
+                                                                Else
+                                                                    vCutValue = vCommon - CDbl(dr11("nY1").ToString) - (Calculator.SawWidth / 2)
+                                                                End If
+                                                            Else
+                                                                If CDbl(dr11("nX1").ToString) > 0 Then
+                                                                    vCutValue = vCommon - CDbl(dr11("nX1").ToString) - (Calculator.SawWidth)
+                                                                Else
+                                                                    vCutValue = vCommon - CDbl(dr11("nX1").ToString) - (Calculator.SawWidth / 2)
+                                                                End If
+                                                            End If
+                                                        End If
+
+                                                        Exit For
+                                                    End If
+                                                Next
+                                            End If
+                                        End If
+
+                                    End If
+'Step 12 Over
+                                    'Add from Loop
+                                    'Dim vNextLoopCondition As String = ""
+                                    'If vCutAxis = "X" Then
+                                    '    vNextLoopCondition = " AND nX1=" & dr("nX1").ToString
+                                    'Else
+                                    '    vNextLoopCondition = " AND nY1=" & dr("nY1").ToString
+                                    'End If
+                                    'Dim vNextLoopCnt As Integer = 0
+                                    'Dim dvoNextLoop As DataView = New DataView(dsCut.Tables(0), "nCutSeqNo>" & dr("nCutSeqNo").ToString & vNextLoopCondition, "", DataViewRowState.CurrentRows)
+                                    'If dvoNextLoop.Count > 0 Then
+                                    '    For Each drNextLoop As DataRowView In dvoNextLoop
+                                    '        vNextLoopCnt += 1
+                                    '    Next
+                                    'End If
+                                    'vCutValue = vCutValue - (vNextLoopCnt * Calculator.SawWidth) - (Calculator.SawWidth / 2)
+
+
+                                    'Rx= If Cut Axis="Y" then Cut Value + Y1 else Px changed as per below formula
+                                    'Rx= If Cut Axis="Y" then Cut Value else X2-X1
+                                    'Ry= If Cut Axis="X" then Cut Value else Pychanged as per below formula
+                                    'Ry= If axis = X then cut value or Y2-Y1
+                                    'Sx= If Cut Axis="Y" then Px - Cut Value else Rx
+                                    'Sy= If Cut Axis="X" then Py - Cut Value else Py
+
+'Step 13: Updating Rx, Ry, Sx, Sy values incase  of Trim or Blade Width to match with results
+
+                                    If vCutAxis = "X" Then
+                                        vRx = vPx
+                                        vRy = vCutValue
+                                        vSx = vRx
+                                        vSy = vPy - vCutValue - (Calculator.SawWidth) - (Calculator.TrimBottom)
+                                    Else
+                                        vRx = vCutValue
+                                        vRy = vPy
+                                        vSx = vPx - vCutValue - (Calculator.SawWidth) - (Calculator.TrimRight)
+                                        vSy = vPy
+                                    End If
+
+'Step 13 Over
+
+'Step 14: Condition to check the current Rx, Ry, Sx, Sy values are possible part to take below
+
+                                    'Find Out the Rx Ry Matching Part in Cut Parts Dataset
+                                    'bRStatus: 1 = Cut Parts, 2 = Wastage Parts
+                                    Dim vCutPartsCond As String = "bMatch=0 AND ((nLength=" & vRx & " AND nHeight=" & vRy & ") OR (nLength=" & vRy & " AND nHeight=" & vRx & "))"
+                                    '
+                                    vCutPartsCond = "  nOptPanelID <>0 AND bMatch=0 AND ( (bRotated=0 AND nLength=" & vRx & " AND nHeight=" & vRy & ") OR (bRotated=1 AND nLength=" & vRy & " AND nHeight=" & vRx & "))"
+                                    Dim dvo2 As DataView = New DataView(dsCutParts.Tables(0), vCutPartsCond, "", DataViewRowState.CurrentRows)
+                                    vGlobalMessage = "CutParts Matching Loop"
+                                    If dvo2.Count > 0 Then
+                                        For Each dr2 As DataRowView In dvo2
+                                            vGlobalMessage = "Matching Part 1"
+                                            Dim vExtraMatchAVailableBelow As Boolean = False
+                                            'Check whether match cut Parts is not possible Px and Py
+                                            '- If the possible cut part is found in (Rx, Ry) or (Sx, Sy), check all the Dx,Dy rows below the current row If at least one value Of Rx, Ry Or Sx, Sy matches any value from Dx Or Dy.
+                                            'Dx or Dy Formula
+                                            Dim dvoBelow As DataView = New DataView(dsCut.Tables(0), " nCutSeqNo>" & dr("nCutSeqNo").ToString(), " nCutSeqNo ASC ", DataViewRowState.CurrentRows)
+                                            For Each drBelow As DataRowView In dvoBelow
+                                                Dim vCutAxisBelow As String = ""
+                                                If drBelow("nX1").ToString = drBelow("nX2").ToString Then
+                                                    vCutAxisBelow = "Y"
+                                                Else
+                                                    vCutAxisBelow = "X"
+                                                End If
+                                                If vCutAxisBelow = "Y" Then
+                                                    If CDbl(drBelow("nY2").ToString) - CDbl(drBelow("nY1").ToString) = vRy Then
+                                                        If drBelow("nY2").ToString = dr("nY2").ToString Then
+                                                            If CDbl(dr("nX2").ToString) > CDbl(drBelow("nX2").ToString) Then
+                                                                vExtraMatchAVailableBelow = True
+                                                            End If
+                                                        End If
+                                                    End If
+                                                Else
+                                                    If CDbl(drBelow("nX2").ToString) - CDbl(drBelow("nX1").ToString) = vRx Then
+                                                        If drBelow("nX2").ToString = dr("nX2").ToString Then
+                                                            If CDbl(dr("nY2").ToString) > CDbl(drBelow("nY2").ToString) Then
+                                                                vExtraMatchAVailableBelow = True
+                                                            End If
+                                                        End If
+                                                    End If
+                                                End If
+                                                If vExtraMatchAVailableBelow Then
+                                                    Exit For
+                                                End If
+                                            Next
+
+                                            If Not vExtraMatchAVailableBelow Then
+                                                If dr2("nOptPanelID").ToString <> "0" Then
+                                                    vRStatus = 1 'Cut Parts
+                                                Else
+                                                    vRStatus = 2 'Watsage Parts
+                                                End If
+                                                Dim dsCutPartsRowUpdate() As Data.DataRow
+                                                dsCutPartsRowUpdate = dsCutParts.Tables(0).Select("nOptCutpartDetailsID='" & dr2("nOptCutpartDetailsID").ToString & "'")
+                                                dsCutPartsRowUpdate(0)(8) = "1" 'bMatch
+                                                Exit For
+                                            End If
+                                        Next
+                                    End If
+'Step 14 Over
+
+'Step 15: Condition to check the current Sx, Sy values if they are possible Cut Parts
+
+                                    'Find Out the Sx Sy Matching Part in Cut Parts Dataset
+                                    'bSStatus 1 = Cut Parts, 2 = Wastage Parts
+                                    'nOptPanelID<>0 AND 
+                                    ' " nOptPanelID <>0 AND bMatch=0 AND ((nLength=" & vSx & " AND nHeight=" & vSy & ") OR (nLength=" & vSy & " AND nHeight=" & vSx & "))"
+                                    vCutPartsCond = "  nOptPanelID <>0 AND bMatch=0 AND ( (bRotated=0 AND nLength=" & vSx & " AND nHeight=" & vSy & ") OR (bRotated=1 AND nLength=" & vSy & " AND nHeight=" & vSx & "))"
+                                    Dim dvo3 As DataView = New DataView(dsCutParts.Tables(0), vCutPartsCond, "", DataViewRowState.CurrentRows)
+                                    For Each dr3 As DataRowView In dvo3
+                                        Dim vExtraMatchAVailableBelow As Boolean = False
+                                        'Check whether match cut Parts is not possible Px and Py
+                                        '- If the possible cut part is found in (Rx, Ry) or (Sx, Sy), check all the Dx,Dy rows below the current row If at least one value Of Rx, Ry Or Sx, Sy matches any value from Dx Or Dy.
+                                        'Dx or Dy Formula
+                                        vGlobalMessage = "Matching Part 2"
+                                        Dim dvoBelow As DataView = New DataView(dsCut.Tables(0), " nCutSeqNo>" & dr("nCutSeqNo").ToString(), " nCutSeqNo ASC ", DataViewRowState.CurrentRows)
+                                        For Each drBelow As DataRowView In dvoBelow
+                                            Dim vCutAxisBelow As String = ""
+                                            If drBelow("nX1").ToString = drBelow("nX2").ToString Then
+                                                vCutAxisBelow = "Y"
+                                            Else
+                                                vCutAxisBelow = "X"
+                                            End If
+                                            If vCutAxisBelow = "Y" Then
+                                                If CDbl(drBelow("nY2").ToString) - CDbl(drBelow("nY1").ToString) = vSy Then
+                                                    If drBelow("nY2").ToString = dr("nY2").ToString Then
+                                                        If CDbl(dr("nX2").ToString) > CDbl(drBelow("nX2").ToString) Then
+                                                            If vSx > CDbl(drBelow("nX2").ToString) - CDbl(dr("nX2").ToString) Then  'Why this condition is not in finding Py on line no. 656
+                                                                vExtraMatchAVailableBelow = True
+                                                            End If
+                                                        End If
+                                                    End If
+                                                End If
+                                            Else
+                                                If CDbl(drBelow("nX2").ToString) - CDbl(drBelow("nX1").ToString) = vSx Then
+                                                    If drBelow("nX2").ToString = dr("nX2").ToString Then
+                                                        If CDbl(dr("nY2").ToString) < CDbl(drBelow("nY2").ToString) Then
+                                                            If vSy > CDbl(drBelow("nY2").ToString) - CDbl(dr("nY2").ToString) Then
+                                                                vExtraMatchAVailableBelow = True
+                                                            End If
+                                                        End If
+                                                        End If
+                                                End If
+                                            End If
+                                            If vExtraMatchAVailableBelow Then
+                                                Exit For
+                                            End If
+                                        Next
+
+                                        If Not vExtraMatchAVailableBelow Then
+                                            If dr3("nOptPanelID").ToString <> "0" Then
+                                                vSStatus = 1 'Cut Parts
+                                            Else
+                                                vSStatus = 2 'Watsage Parts
+                                            End If
+                                            Dim dsCutPartsRowUpdate1() As Data.DataRow
+                                            dsCutPartsRowUpdate1 = dsCutParts.Tables(0).Select("nOptCutpartDetailsID='" & dr3("nOptCutpartDetailsID").ToString & "'")
+                                            dsCutPartsRowUpdate1(0)(8) = "1" 'bMatch
+                                            Exit For
+                                        End If
+
+                                    Next
+
+                                    'Update the current Row in Dataset
+                                    Dim dsCutRowUpdate1() As Data.DataRow
+                                    dsCutRowUpdate1 = dsCut.Tables(0).Select("nCutSeqNo=" & dr("nCutSeqNo").ToString)
+                                    dsCutRowUpdate1(0)(8) = vCutAxis 'sCutAxis
+                                    dsCutRowUpdate1(0)(9) = vCutValue  'nCutValue
+                                    dsCutRowUpdate1(0)(10) = vPx  'nPx
+                                    dsCutRowUpdate1(0)(11) = vPy  'nPy
+                                    dsCutRowUpdate1(0)(12) = vRx  'nRx
+                                    dsCutRowUpdate1(0)(13) = vRy 'nRy
+                                    dsCutRowUpdate1(0)(14) = vRStatus  'bRStatus
+                                    dsCutRowUpdate1(0)(15) = vSx 'nSx
+                                    dsCutRowUpdate1(0)(16) = vSy  'nSy
+                                    dsCutRowUpdate1(0)(17) = vSStatus 'bSStatus
+
+                                Next
+
+                                Dim dvoRepeat As DataView = New DataView(dsCut.Tables(0), " bRStatus=0 OR bSStatus=0", " nCutSeqNo ASC ", DataViewRowState.CurrentRows)
+                                vGlobalMessage = "Wastage Parts Matching Loop"
+                                For Each drRepeat As DataRowView In dvoRepeat
+
+                                    Dim vRStatus As Double = CDbl(drRepeat("bRStatus").toString())
+                                    Dim vSStatus As Double = CDbl(drRepeat("bSStatus").toString())
+'Step 15 Over
+
+'Step 16: Condition to check the current Rx, Ry values if they are possible Cut Parts
+
+                                    If drRepeat("bRStatus").toString() = "0" Then
+                                        'Find Out the Rx Ry Matching Part in Cut Parts Dataset
+                                        'bRStatus: 1 = Cut Parts, 2 = Wastage Parts
+                                        Dim vCutPartsCond As String = ""
+                                        'nOptPanelID=0 AND
+                                        vCutPartsCond = "  bMatch=0 AND ( (bRotated=0 AND nLength=" & drRepeat("nRx").ToString() & " AND nHeight=" & drRepeat("nRy").ToString() & ") OR (bRotated=1 AND nLength=" & drRepeat("nRy").ToString() & " AND nHeight=" & drRepeat("nRx").ToString() & "))"
+                                        Dim dvo2 As DataView = New DataView(dsCutParts.Tables(0), vCutPartsCond, "", DataViewRowState.CurrentRows)
+                                        If dvo2.Count > 0 Then
+                                            For Each dr2 As DataRowView In dvo2
+                                                If dr2("nOptPanelID").ToString <> "0" Then
+                                                    vRStatus = 1 'Cut Parts
+                                                Else
+                                                    vRStatus = 2 'Watsage Parts
+                                                End If
+                                                Dim dsCutPartsRowUpdate2() As Data.DataRow
+                                                dsCutPartsRowUpdate2 = dsCutParts.Tables(0).Select("nOptCutpartDetailsID='" & drRepeat("nOptCutpartDetailsID").ToString & "'")
+                                                dsCutPartsRowUpdate2(0)(8) = "1" 'bMatch
+                                                Exit For
+                                            Next
+                                        End If
+                                    End If
+                                    If drRepeat("bSStatus") = "0" Then
+                                        'Find Out the Sx Sy Matching Part in Cut Parts Dataset
+                                        'bSStatus 1 = Cut Parts, 2 = Wastage Parts
+                                        'nOptPanelID=0 AND
+                                        ' " bMatch=0 AND ((nLength=" & drRepeat("nSx").ToString() & " AND nHeight=" & drRepeat("nSy").ToString() & ") OR (nLength=" & drRepeat("nSy").ToString() & " AND nHeight=" & drRepeat("nSx").ToString() & "))"
+                                        Dim vCutPartsCond As String = "  bMatch=0 AND ( (bRotated=0 AND nLength=" & drRepeat("nSx").ToString() & " AND nHeight=" & drRepeat("nSy").ToString() & ") OR (bRotated=1 AND nLength=" & drRepeat("nSy").ToString() & " AND nHeight=" & drRepeat("nSx").ToString() & "))"
+                                        Dim dvo3 As DataView = New DataView(dsCutParts.Tables(0), vCutpartsCond, "", DataViewRowState.CurrentRows)
+                                        For Each dr3 As DataRowView In dvo3
+                                            If dr3("nOptPanelID").ToString <> "0" Then
+                                                vSStatus = 1 'Cut Parts
+                                            Else
+                                                vSStatus = 2 'Watsage Parts
+                                            End If
+                                            Dim dsCutPartsRowUpdate3() As Data.DataRow
+                                            dsCutPartsRowUpdate3 = dsCutParts.Tables(0).Select("nOptCutpartDetailsID='" & dr3("nOptCutpartDetailsID").ToString & "'")
+                                            dsCutPartsRowUpdate3(0)(8) = "1" 'bMatch
+                                            Exit For
+                                        Next
+                                    End If
+                                    Dim dsCutRowUpdate11() As Data.DataRow
+                                    dsCutRowUpdate11 = dsCut.Tables(0).Select("nCutSeqNo='" & drRepeat("nCutSeqNo").ToString & "'")
+                                    dsCutRowUpdate11(0)(14) = vRStatus
+                                    dsCutRowUpdate11(0)(17) = vSStatus
+                                Next
+
+                                'Update The Database
+                                Dim dvo4 As DataView = New DataView(dsCut.Tables(0), "", "", DataViewRowState.CurrentRows)
+                                    For Each dr4 As DataRowView In dvo4
+                                        LocalSalesObj2.executeQry("UPDATE moptcutdetails SET sCutAxis='" & dr4("sCutAxis").ToString & "',nCutValue=" & dr4("nCutValue").ToString & ",nPx=" & dr4("nPx").ToString & ",nPy=" & dr4("nPy").ToString & ",nRx=" & dr4("nRx").ToString & ",nRy=" & dr4("nRy").ToString & ",bRStatus=" & dr4("bRStatus").ToString & ",nSx=" & dr4("nSx").ToString & ",nSy=" & dr4("nSy").ToString & ",bSStatus=" & dr4("bSStatus").ToString &
+                               " WHERE nOptCutDetailsID=" & dr4("nOptCutDetailsID").ToString, conn, trans)
+                                    Next
+
+                                Next
+                                fLayout2d.CurrentLayout = iLayout
+                        Next iLayout
+
+
+                        LocalSalesObj2.executeQry("UPDATE moptstocksheets SET nQtyReq=" & vMatrialBoardCount & " WHERE nOptStockSheetID=" & vMaterialArr(21), conn, trans)
+
+                    Else
+                        Throw New System.Exception(result.ToString)
+                    End If
+
+
+                End If
+            Next
+        End If
+
+
+        Return True
+    End Function
+    Public Function setupNestingConfigVariables(ByVal vSettingArr() As String, ByRef aCalculator As CutGLib.CutEngine, ByVal vUOMID As String) As Boolean
+        Dim appConfig As NameValueCollection = ConfigurationManager.AppSettings
+        aCalculator.SetComputerLicenseKey(appConfig("CutGLibLicenseKey"))
+        If vUOMID = "2" Or vUOMID = "7" Then
+            aCalculator.SawWidth = CDbl(vSettingArr(0).ToString)
+            aCalculator.WasteSizeMin = 0
+            aCalculator.TrimLeft = CDbl(vSettingArr(2).ToString)
+            aCalculator.TrimRight = CDbl(vSettingArr(3).ToString)
+            aCalculator.TrimBottom = 0
+            aCalculator.TrimTop = 0
+            aCalculator.MaxCutLevel = 1
+            aCalculator.UseLayoutMinimization = False
+            aCalculator.MaxLayoutSize = 0
+            aCalculator.MinimizeSheetRotation = False
+        Else
+            aCalculator.SawWidth = CDbl(vSettingArr(0).ToString)
+            aCalculator.WasteSizeMin = CDbl(vSettingArr(1).ToString)
+            aCalculator.TrimLeft = CDbl(vSettingArr(2).ToString)
+            aCalculator.TrimRight = CDbl(vSettingArr(3).ToString)
+            aCalculator.TrimBottom = CDbl(vSettingArr(4).ToString)
+            aCalculator.TrimTop = CDbl(vSettingArr(5).ToString)
+            aCalculator.MaxCutLevel = CInt(vSettingArr(6).ToString)
+            If vSettingArr(8) = "1" Then 'bMinmizePanelRotation
+                aCalculator.UseLayoutMinimization = True
+            Else
+                aCalculator.UseLayoutMinimization = False
+            End If
+            aCalculator.MaxLayoutSize = CInt(vSettingArr(7))
+            If vSettingArr(9) = "1" Then 'bLayoutNumber
+                aCalculator.MinimizeSheetRotation = True
+            Else
+                aCalculator.MinimizeSheetRotation = False
+            End If
+
+            Dim vRollMode As Boolean = False
+            If vSettingArr(11) = "1" Then
+                vRollMode = True
+            End If
+            If vSettingArr(10) = "1" Then
+                aCalculator.SetVerticalCutDirection(vRollMode)
+            ElseIf vSettingArr(10) = "2" Then
+                aCalculator.SetHorizontalCutDirection(vRollMode)
+            Else
+                aCalculator.SetAutoCutDirection()
+            End If
+        End If
+        Return True
+    End Function
+    'Public Function setupNestingConfigVariables(ByVal vSettingArr() As String, ByRef aCalculator As CutGLib.CutEngine, ByVal vUOMID As String) As Boolean
+    '    Dim appConfig As NameValueCollection = ConfigurationManager.AppSettings
+    '    aCalculator.SetComputerLicenseKey(appConfig("CutGLibLicenseKey"))
+    '    If vUOMID = "2" Or vUOMID = "7" Then
+    '        aCalculator.SawWidth = CDbl(vSettingArr(1).ToString)
+    '        aCalculator.WasteSizeMin = 0
+    '        aCalculator.TrimLeft = CDbl(vSettingArr(3).ToString)
+    '        aCalculator.TrimRight = CDbl(vSettingArr(4).ToString)
+    '        aCalculator.TrimBottom = 0
+    '        aCalculator.TrimTop = 0
+    '        aCalculator.MaxCutLevel = 1
+    '        aCalculator.UseLayoutMinimization = False
+    '        aCalculator.MaxLayoutSize = 0
+    '        aCalculator.MinimizeSheetRotation = False
+    '    Else
+    '        aCalculator.SawWidth = CDbl(vSettingArr(1).ToString)
+    '        aCalculator.WasteSizeMin = CDbl(vSettingArr(2).ToString)
+    '        aCalculator.TrimLeft = CDbl(vSettingArr(3).ToString)
+    '        aCalculator.TrimRight = CDbl(vSettingArr(4).ToString)
+    '        aCalculator.TrimBottom = CDbl(vSettingArr(5).ToString)
+    '        aCalculator.TrimTop = CDbl(vSettingArr(6).ToString)
+    '        aCalculator.MaxCutLevel = CInt(vSettingArr(7).ToString)
+    '        If vSettingArr(9) = "1" Then
+    '            aCalculator.UseLayoutMinimization = True
+    '        Else
+    '            aCalculator.UseLayoutMinimization = False
+    '        End If
+    '        aCalculator.MaxLayoutSize = CInt(vSettingArr(8))
+    '        If vSettingArr(10) = "1" Then
+    '            aCalculator.MinimizeSheetRotation = True
+    '        Else
+    '            aCalculator.MinimizeSheetRotation = False
+    '        End If
+
+    '        Dim vRollMode As Boolean = False
+    '        If vSettingArr(13) = "1" Then
+    '            vRollMode = True
+    '        End If
+    '        If vSettingArr(12) = "1" Then
+    '            aCalculator.SetVerticalCutDirection(vRollMode)
+    '        ElseIf vSettingArr(12) = "2" Then
+    '            aCalculator.SetHorizontalCutDirection(vRollMode)
+    '        Else
+    '            aCalculator.SetAutoCutDirection()
+    '        End If
+    '    End If
+    '    Return True
+    'End Function
+End Class
